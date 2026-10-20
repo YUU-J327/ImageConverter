@@ -210,6 +210,7 @@ namespace ImageConverter
             try
             {
                 int[] lut = new int[32768]; // ヒストグラムの bin -> パレット番号
+                int[] palR = new int[boxes.Count], palG = new int[boxes.Count], palB = new int[boxes.Count];
                 ColorPalette pal = dst.Palette;
                 for (int i = 0; i < boxes.Count; i++)
                 {
@@ -219,15 +220,41 @@ namespace ImageConverter
                         n += count[bin]; sr += sumR[bin]; sg += sumG[bin]; sb += sumB[bin];
                         lut[bin] = i;
                     }
-                    pal.Entries[i] = Color.FromArgb((int)(sr / n), (int)(sg / n), (int)(sb / n));
+                    palR[i] = (int)(sr / n); palG[i] = (int)(sg / n); palB[i] = (int)(sb / n);
+                    pal.Entries[i] = Color.FromArgb(palR[i], palG[i], palB[i]);
                 }
                 int transparent = boxes.Count;
                 if (hasAlpha) pal.Entries[transparent] = Color.FromArgb(0, 0, 0, 0);
                 dst.Palette = pal;
 
-                byte[] idx = new byte[w * h];
-                for (int i = 0, o = 0; i < px.Length; i += 4, o++)
-                    idx[o] = (byte)(px[i + 3] < 128 ? transparent : lut[((px[i + 2] >> 3) << 10) | ((px[i + 1] >> 3) << 5) | (px[i] >> 3)]);
+                byte[] idx;
+                if (used.Count > maxColors)
+                {
+                    // 色数が多すぎて減色した画像だけ、誤差拡散で階調を補う。
+                    // 誤差を足した色は画像に無い bin に入ることもあるので、全 bin の最寄りのパレット色を先に求めておく
+                    int[] nearest = new int[32768];
+                    for (int bin = 0; bin < nearest.Length; bin++)
+                    {
+                        int r, g, b;
+                        if (count[bin] > 0) { r = (int)(sumR[bin] / count[bin]); g = (int)(sumG[bin] / count[bin]); b = (int)(sumB[bin] / count[bin]); }
+                        else { r = ((bin >> 10) << 3) + 4; g = (((bin >> 5) & 31) << 3) + 4; b = ((bin & 31) << 3) + 4; }
+                        int bestK = 0, bestD = int.MaxValue;
+                        for (int k = 0; k < boxes.Count; k++)
+                        {
+                            int dr = r - palR[k], dg = g - palG[k], db = b - palB[k];
+                            int d = dr * dr + dg * dg + db * db;
+                            if (d < bestD) { bestD = d; bestK = k; }
+                        }
+                        nearest[bin] = bestK;
+                    }
+                    idx = Dither(px, w, h, palR, palG, palB, nearest, transparent);
+                }
+                else // 全色をそのままパレットに入れられるので、誤差は出ない
+                {
+                    idx = new byte[w * h];
+                    for (int i = 0, o = 0; i < px.Length; i += 4, o++)
+                        idx[o] = (byte)(px[i + 3] < 128 ? transparent : lut[((px[i + 2] >> 3) << 10) | ((px[i + 1] >> 3) << 5) | (px[i] >> 3)]);
+                }
 
                 BitmapData od = dst.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
                 try
@@ -242,6 +269,40 @@ namespace ImageConverter
                 return dst;
             }
             catch { dst.Dispose(); throw; }
+        }
+
+        static int Clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+        // Floyd–Steinberg 法: 各画素をパレットの最寄り色にし、その誤差を右(7)・左下(3)・下(5)・右下(1) /16 の
+        // 未処理の画素へ配って、パレットに無い色を周囲の画素の混ぜ合わせで表現する。透過画素は誤差を受け渡さない。
+        static byte[] Dither(byte[] px, int w, int h, int[] palR, int[] palG, int[] palB, int[] nearest, int transparent)
+        {
+            // 1 画素が受け取る誤差の上限。パレットが疎な色域で誤差が溜まり続け、遠い色が点々と混ざるのを防ぐ
+            const int Limit = 16;
+            byte[] idx = new byte[w * h];
+            // 現在の行と次の行の誤差 (R, G, B)。左右に 1 画素分の余白があり、値は 16 倍のまま持つ
+            int[] cur = new int[(w + 2) * 3], next = new int[(w + 2) * 3];
+            for (int y = 0; y < h; y++)
+            {
+                Array.Clear(next, 0, next.Length);
+                for (int x = 0; x < w; x++)
+                {
+                    int i = (y * w + x) * 4, e = (x + 1) * 3;
+                    if (px[i + 3] < 128) { idx[y * w + x] = (byte)transparent; continue; }
+                    int r = Clamp(px[i + 2] + Clamp(cur[e] / 16, -Limit, Limit), 0, 255);
+                    int g = Clamp(px[i + 1] + Clamp(cur[e + 1] / 16, -Limit, Limit), 0, 255);
+                    int b = Clamp(px[i] + Clamp(cur[e + 2] / 16, -Limit, Limit), 0, 255);
+                    int k = nearest[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)];
+                    idx[y * w + x] = (byte)k;
+                    int dr = r - palR[k], dg = g - palG[k], db = b - palB[k];
+                    cur[e + 3] += dr * 7; cur[e + 4] += dg * 7; cur[e + 5] += db * 7;
+                    next[e - 3] += dr * 3; next[e - 2] += dg * 3; next[e - 1] += db * 3;
+                    next[e] += dr * 5; next[e + 1] += dg * 5; next[e + 2] += db * 5;
+                    next[e + 3] += dr; next[e + 4] += dg; next[e + 5] += db;
+                }
+                int[] t = cur; cur = next; next = t;
+            }
+            return idx;
         }
 
         // アニメーション GIF / 複数ページ TIFF などの総フレーム数と、そのフレーム軸を返す

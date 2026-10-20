@@ -1,6 +1,7 @@
 ﻿// 画像コンバーター: Windows 11 新コンテキストメニュー用 IExplorerCommand (アウトプロセス COM サーバー)
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -79,6 +80,34 @@ namespace ImageConverter
             switch (fmt) { case "jpg": return ".jpg"; case "tiff": return ".tif"; default: return "." + fmt; }
         }
 
+        // EXIF Orientation (0x0112) を読み、見た目を正しい向きにするための回転/反転を返す
+        static RotateFlipType OrientationOf(Image img)
+        {
+            const int OrientationId = 0x0112;
+            if (Array.IndexOf(img.PropertyIdList, OrientationId) < 0) return RotateFlipType.RotateNoneFlipNone;
+            byte[] v = img.GetPropertyItem(OrientationId).Value;
+            if (v == null || v.Length < 2) return RotateFlipType.RotateNoneFlipNone;
+            switch (v[0] | v[1]) // 値は 1〜8 なので、どちらのバイトが下位でも読める
+            {
+                case 2: return RotateFlipType.RotateNoneFlipX;
+                case 3: return RotateFlipType.Rotate180FlipNone;
+                case 4: return RotateFlipType.RotateNoneFlipY;
+                case 5: return RotateFlipType.Rotate90FlipX;
+                case 6: return RotateFlipType.Rotate90FlipNone;
+                case 7: return RotateFlipType.Rotate270FlipX;
+                case 8: return RotateFlipType.Rotate270FlipNone;
+                default: return RotateFlipType.RotateNoneFlipNone;
+            }
+        }
+
+        // メタデータは変換先に引き継がれないため、EXIF の向きは画素に反映して読み込む
+        static Image LoadOriented(string path)
+        {
+            Image img = Image.FromFile(path);
+            try { img.RotateFlip(OrientationOf(img)); return img; }
+            catch { img.Dispose(); throw; }
+        }
+
         public static void Convert(string path, string fmt)
         {
             string dir = Path.GetDirectoryName(path);
@@ -88,7 +117,7 @@ namespace ImageConverter
             for (int i = 1; File.Exists(dest); i++)
                 dest = Path.Combine(dir, string.Format("{0} ({1}){2}", baseName, i, ext));
 
-            using (Image img = Image.FromFile(path))
+            using (Image img = LoadOriented(path))
             using (Bitmap bmp = new Bitmap(img.Width, img.Height))
             {
                 using (Graphics g = Graphics.FromImage(bmp))
@@ -145,15 +174,18 @@ namespace ImageConverter
             Server.Busy();
             Task.Run(() =>
             {
-                var errors = new List<string>();
-                foreach (string p in paths)
+                try
                 {
-                    try { Converter.Convert(p, fmt); }
-                    catch (Exception ex) { errors.Add(Path.GetFileName(p) + ": " + ex.Message); }
+                    var errors = new List<string>();
+                    foreach (string p in paths)
+                    {
+                        try { Converter.Convert(p, fmt); }
+                        catch (Exception ex) { errors.Add(Path.GetFileName(p) + ": " + ex.Message); }
+                    }
+                    if (errors.Count > 0)
+                        MessageBox.Show("変換に失敗しました。\n\n" + string.Join("\n", errors), "画像コンバーター", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
-                if (errors.Count > 0)
-                    MessageBox.Show("変換に失敗しました。\n\n" + string.Join("\n", errors), "画像コンバーター", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                Server.Idle();
+                finally { Server.Idle(); }
             });
             return Hr.S_OK;
         }
@@ -230,10 +262,13 @@ namespace ImageConverter
     {
         public static Guid Clsid = new Guid("6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10");
         static int active;
-        static long lastTick = Environment.TickCount;
+        // Environment.TickCount は約24.9日で負に巻き戻るため、単調増加する Stopwatch で経過時間を測る
+        static readonly Stopwatch clock = Stopwatch.StartNew();
+        static long lastTick;
 
-        public static void Busy() { Interlocked.Increment(ref active); lastTick = Environment.TickCount; }
-        public static void Idle() { Interlocked.Decrement(ref active); lastTick = Environment.TickCount; }
+        public static void Busy() { Interlocked.Increment(ref active); Touch(); }
+        public static void Idle() { Interlocked.Decrement(ref active); Touch(); }
+        static void Touch() { Interlocked.Exchange(ref lastTick, clock.ElapsedMilliseconds); }
 
         [DllImport("ole32.dll")]
         static extern int CoRegisterClassObject(ref Guid rclsid, IntPtr pUnk, uint dwClsContext, uint flags, out uint cookie);
@@ -253,7 +288,7 @@ namespace ImageConverter
             int hr = CoRegisterClassObject(ref Clsid, unk, 4 /*LOCAL_SERVER*/, 1 /*MULTIPLEUSE*/, out cookie);
             if (hr != 0) return hr;
             // 最後の操作から10分間何もなければ終了
-            while (Interlocked.CompareExchange(ref active, 0, 0) > 0 || Environment.TickCount - lastTick < 10 * 60 * 1000)
+            while (Interlocked.CompareExchange(ref active, 0, 0) > 0 || clock.ElapsedMilliseconds - Interlocked.Read(ref lastTick) < 10 * 60 * 1000)
                 Thread.Sleep(2000);
             CoRevokeClassObject(cookie);
             return 0;

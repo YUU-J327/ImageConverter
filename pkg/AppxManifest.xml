@@ -1,0 +1,62 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10/4"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap">
+
+  <Identity Name="ImageConverter.ContextMenu" Publisher="CN=ImageConverter" Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>画像コンバーター</DisplayName>
+    <PublisherDisplayName>ImageConverter</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26200.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="App" Executable="ImageConverterCmd.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements AppListEntry="none" DisplayName="画像コンバーター" Description="画像コンバーター"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type=".jpg"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".jpeg"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".png"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".bmp"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".gif"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".tif"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".tiff"><desktop5:Verb Id="ImageConverter" Clsid="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" /></desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="ImageConverterCmd.exe" Arguments="-ServerName:ImageConverter.Server" DisplayName="画像コンバーター">
+              <com:Class Id="6F1B7D52-3C0E-4A53-9B1D-2A8E5C4D7F10" DisplayName="画像コンバーター" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

@@ -1,0 +1,12 @@
+# ビルド成果物・生成物
+bin/
+tools/
+test/
+*.msix
+*.cer
+*.pfx
+
+# 旧方式(従来メニューのレジストリ登録)のローカルファイル
+/convert.ps1
+/install.ps1
+/uninstall.ps1

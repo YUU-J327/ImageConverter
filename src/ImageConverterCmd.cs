@@ -73,6 +73,90 @@ namespace ImageConverter
         public const int CLASS_E_NOAGGREGATION = unchecked((int)0x80040110);
     }
 
+    // WebP は GDI+ では読み書きできないので、libwebp (libwebp.dll) を直接呼び出す。
+    // libwebp.dll は get-libwebp.ps1 が取得し、build.ps1 が exe と同じ bin\ に置く。
+    static class WebP
+    {
+        const string Dll = "libwebp.dll";
+        const int MaxSide = 16383; // WebP の幅・高さの上限
+        const float Quality = 90f; // 非可逆圧縮の品質 (0-100)。透明度は劣化させない
+
+        [DllImport(Dll)] static extern int WebPGetInfo(byte[] data, UIntPtr size, out int width, out int height);
+        [DllImport(Dll)] static extern IntPtr WebPDecodeBGRAInto(byte[] data, UIntPtr size, IntPtr output, UIntPtr outputSize, int stride);
+        [DllImport(Dll)] static extern UIntPtr WebPEncodeBGRA(IntPtr bgra, int width, int height, int stride, float quality, out IntPtr output);
+        [DllImport(Dll)] static extern void WebPFree(IntPtr ptr);
+
+        static bool Tag(byte[] d, int offset, string s)
+        {
+            if (d.Length < offset + s.Length) return false;
+            for (int i = 0; i < s.Length; i++)
+                if (d[offset + i] != s[i]) return false;
+            return true;
+        }
+
+        public static bool IsWebP(byte[] head) { return Tag(head, 0, "RIFF") && Tag(head, 8, "WEBP"); }
+
+        // DLL が無い・読み込めないときは、原因が分かるメッセージにする
+        static Exception Friendly(Exception ex)
+        {
+            if (ex is DllNotFoundException || ex is BadImageFormatException || ex is EntryPointNotFoundException)
+                return new InvalidOperationException("libwebp.dll を読み込めません。bin フォルダに libwebp.dll と libsharpyuv.dll があるか、" +
+                    "Visual C++ 再頒布可能パッケージ (x64) が入っているか確認してください。", ex);
+            return ex;
+        }
+
+        public static Bitmap Decode(byte[] data)
+        {
+            // VP8X ヘッダーのフラグ (20 バイト目) の 0x02 がアニメーション
+            if (Tag(data, 12, "VP8X") && data.Length > 20 && (data[20] & 0x02) != 0)
+                throw new NotSupportedException("アニメーション WebP には対応していません。");
+            try
+            {
+                int w, h;
+                if (WebPGetInfo(data, new UIntPtr((uint)data.Length), out w, out h) == 0)
+                    throw new InvalidDataException("WebP として読み込めません。");
+                Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+                try
+                {
+                    BitmapData bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                    try
+                    {
+                        // BGRA の並びは Format32bppArgb (非乗算済みアルファ) とそのまま同じ
+                        if (WebPDecodeBGRAInto(data, new UIntPtr((uint)data.Length), bd.Scan0, new UIntPtr((uint)(bd.Stride * h)), bd.Stride) == IntPtr.Zero)
+                            throw new InvalidDataException("WebP の復号に失敗しました。");
+                    }
+                    finally { bmp.UnlockBits(bd); }
+                    return bmp;
+                }
+                catch { bmp.Dispose(); throw; }
+            }
+            catch (Exception ex) { throw Friendly(ex); }
+        }
+
+        public static void Save(Bitmap bmp, Stream s)
+        {
+            if (bmp.Width > MaxSide || bmp.Height > MaxSide)
+                throw new ArgumentException("WebP は幅・高さとも " + MaxSide + " ピクセルまでです。");
+            try
+            {
+                IntPtr output;
+                UIntPtr size;
+                BitmapData bd = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try { size = WebPEncodeBGRA(bd.Scan0, bmp.Width, bmp.Height, bd.Stride, Quality, out output); }
+                finally { bmp.UnlockBits(bd); }
+                if (size == UIntPtr.Zero) throw new InvalidDataException("WebP への変換に失敗しました。");
+                try
+                {
+                    byte[] buf = new byte[(int)size.ToUInt64()];
+                    Marshal.Copy(output, buf, 0, buf.Length);
+                    s.Write(buf, 0, buf.Length);
+                }
+                finally { WebPFree(output); }
+            }
+            catch (Exception ex) { throw Friendly(ex); }
+        }
+    }
+
     static class Converter
     {
         public static string ExtOf(string fmt)
@@ -325,6 +409,7 @@ namespace ImageConverter
                 case "png": bmp.Save(s, ImageFormat.Png); break;
                 case "bmp": bmp.Save(s, ImageFormat.Bmp); break;
                 case "tiff": bmp.Save(s, ImageFormat.Tiff); break;
+                case "webp": WebP.Save(bmp, s); break;
                 case "gif":
                     using (Bitmap indexed = ToIndexed(bmp)) indexed.Save(s, ImageFormat.Gif);
                     break;
@@ -402,13 +487,23 @@ namespace ImageConverter
             }
         }
 
+        // WebP は GDI+ で開けないので libwebp で復号する。それ以外は GDI+ に任せる
+        static Image Open(string path)
+        {
+            byte[] head = new byte[12];
+            int n;
+            using (FileStream f = File.OpenRead(path)) n = f.Read(head, 0, head.Length);
+            if (n == head.Length && WebP.IsWebP(head)) return WebP.Decode(File.ReadAllBytes(path));
+            return Image.FromFile(path);
+        }
+
         public static void Convert(string path, string fmt)
         {
             string dir = Path.GetDirectoryName(path);
             string baseName = Path.GetFileNameWithoutExtension(path);
             string ext = ExtOf(fmt);
 
-            using (Image img = Image.FromFile(path))
+            using (Image img = Open(path))
             {
                 FrameDimension dim;
                 int frames = FrameCount(img, out dim);
@@ -534,6 +629,7 @@ namespace ImageConverter
                 new FormatCommand("bmp", "BMP に変換"),
                 new FormatCommand("gif", "GIF に変換"),
                 new FormatCommand("tiff", "TIFF に変換"),
+                new FormatCommand("webp", "WebP に変換"),
             }, 0);
             return Hr.S_OK;
         }

@@ -3,6 +3,9 @@ $bin = Join-Path $root 'bin'
 $assets = Join-Path $root 'pkg\Assets'
 New-Item -ItemType Directory -Force $bin, $assets | Out-Null
 
+# WebP 用の libwebp.dll を取得 (取得済みなら何もしない)
+& "$root\get-libwebp.ps1"
+
 # ロゴ画像を生成
 Add-Type -AssemblyName System.Drawing
 foreach ($s in @(@('StoreLogo', 50), @('Square44x44Logo', 44), @('Square150x150Logo', 150))) {
@@ -22,7 +25,9 @@ foreach ($s in @(@('StoreLogo', 50), @('Square44x44Logo', 44), @('Square150x150L
 }
 
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-& $csc /nologo /target:winexe /optimize+ /out:"$bin\ImageConverterCmd.exe" `
+# libwebp.dll は 64bit (x64) 版なので、exe も x64 に固定する
+& $csc /nologo /target:winexe /platform:x64 /optimize+ /out:"$bin\ImageConverterCmd.exe" `
     /r:System.Drawing.dll /r:System.Windows.Forms.dll "$root\src\ImageConverterCmd.cs"
 if ($LASTEXITCODE -ne 0) { throw 'ビルドに失敗しました' }
+Copy-Item "$root\tools\webp\*.dll" $bin -Force
 Write-Host 'ビルド完了'
